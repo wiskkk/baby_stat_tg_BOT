@@ -1,0 +1,13 @@
+fastapi[all]
+uvicorn
+aiogram
+asyncpg
+sqlalchemy
+alembic
+python-dotenv
+alembic
+asyncpg
+sqlalchemy
+psycopg2-binary
+isort
+pytz

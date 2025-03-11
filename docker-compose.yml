@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:13
+    container_name: postgres
+    environment:
+      POSTGRES_USER: bot_user
+      POSTGRES_PASSWORD: bot_password
+      POSTGRES_DB: bot_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  bot:
+    build: .
+    container_name: telegram_bot
+    environment:
+      - PYTHONPATH=/app
+      - BOT_TOKEN=${BOT_TOKEN}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=bot_user
+      - DB_PASS=bot_password
+      - DB_NAME=bot_db
+    depends_on:
+      - postgres
+    ports:
+      - "8000:8000"
+    restart: always
+    volumes:
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+
+volumes:
+  postgres_data:
