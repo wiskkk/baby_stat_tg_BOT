@@ -1,8 +1,8 @@
-"""init migr
+"""fix model sleep
 
-Revision ID: 996cf7124768
-Revises: 
-Create Date: 2025-03-11 13:47:12.065155
+Revision ID: 72b1332a40a7
+Revises: 4be04886a604
+Create Date: 2025-03-12 14:26:50.423276
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '996cf7124768'
-down_revision: Union[str, None] = None
+revision: str = '72b1332a40a7'
+down_revision: Union[str, None] = '4be04886a604'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

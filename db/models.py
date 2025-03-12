@@ -21,12 +21,14 @@ class SleepRecord(Base):
     __tablename__ = "sleep_records"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, nullable=False)  # Telegram ID пользователя
+    user_telegram_id = Column(Integer, ForeignKey("users.telegram_id"), nullable=False)
     start_time = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     end_time = Column(DateTime(timezone=True), nullable=True)
 
+    user = relationship("User")
+
     def __repr__(self) -> str:
-        return f"<SleepRecord(id={self.id}, user_id={self.user_id}, start={self.start_time}, end={self.end_time})>"
+        return f"<SleepRecord(id={self.id},user_telegram_id={self.user_telegram_id}, start={self.start_time}, end={self.end_time})>"
 
 
 class FeedingRecord(Base):
@@ -34,7 +36,7 @@ class FeedingRecord(Base):
     __tablename__ = "feeding_records"
 
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_telegram_id = Column(Integer, ForeignKey("users.telegram_id"), nullable=False)
     amount = Column(Integer, nullable=False)
     timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

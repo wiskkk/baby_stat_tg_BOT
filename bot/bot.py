@@ -52,14 +52,13 @@ sleep_keyboard = ReplyKeyboardMarkup(
 )
 
 
-# Клавиатура с кнопкой завершения сна
-async def get_wake_up_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="Завершить сон")]
-        ],
-        resize_keyboard=True
-    )
+# Клавиатура для завершения сна
+wake_up_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Завершить сон")]
+    ],
+    resize_keyboard=True
+)
 
 # Клавиатура для ввода объема питания
 feed_keyboard = ReplyKeyboardMarkup(
@@ -108,6 +107,7 @@ async def confirm_sleep_time(message: Message, session: AsyncSession = get_db())
     now = datetime.now(TZ)
 
     async for db_session in session:
+        # Ищем пользователя по telegram_id
         result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
         user = result.scalars().first()
 
@@ -115,14 +115,14 @@ async def confirm_sleep_time(message: Message, session: AsyncSession = get_db())
             await message.answer("Ошибка! Вы не зарегистрированы. Отправьте /start.")
             return
 
-        # Создаем запись о сне
-        sleep_record = SleepRecord(user_id=user.id, start_time=now)
+        # Создаем запись о сне, используя user_telegram_id
+        sleep_record = SleepRecord(user_telegram_id=user.telegram_id, start_time=now)
         db_session.add(sleep_record)
         await db_session.commit()
 
     await message.answer(
         "Сон зафиксирован! Когда малыш проснется, нажмите 'Завершить сон'.",
-        reply_markup=await get_wake_up_keyboard()
+        reply_markup=wake_up_keyboard
     )
 
 
@@ -138,9 +138,9 @@ async def manual_sleep_time(message: Message, session: AsyncSession = get_db()):
     telegram_id = message.from_user.id
     try:
         custom_time = datetime.strptime(
-            message.text, "%H:%M").time()  # Парсим только время
+            message.text, "%H:%M").time()
         custom_datetime = datetime.combine(
-            datetime.today(), custom_time, tzinfo=TZ)  # Добавляем дату и зону
+            datetime.today(), custom_time, tzinfo=TZ)
 
         async for db_session in session:
             result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
@@ -152,14 +152,14 @@ async def manual_sleep_time(message: Message, session: AsyncSession = get_db()):
 
             # Создаем запись о сне
             sleep_record = SleepRecord(
-                user_id=user.id, start_time=custom_datetime)
+                user_telegram_id=user.telegram_id, start_time=custom_datetime)
             db_session.add(sleep_record)
             await db_session.commit()
 
         await message.answer("Сон зафиксирован по введенному времени!")
         await message.answer(
             "Когда малыш проснется, нажмите 'Завершить сон'.",
-            reply_markup=await get_wake_up_keyboard()
+            reply_markup=wake_up_keyboard
         )
     except ValueError:
         await message.answer("Ошибка! Введите время в формате HH:MM.")
@@ -167,8 +167,9 @@ async def manual_sleep_time(message: Message, session: AsyncSession = get_db()):
 
 @dp.message(lambda message: message.text == "Завершить сон")
 async def wake_up_button(message: Message, session: AsyncSession = get_db()):
-    """Фиксируем окончание сна при нажатии на кнопку"""
+    """Фиксируем окончание сна при нажатии на кнопку."""
     telegram_id = message.from_user.id
+    now = datetime.now(TZ)
 
     async for db_session in session:
         # Ищем пользователя
@@ -182,52 +183,22 @@ async def wake_up_button(message: Message, session: AsyncSession = get_db()):
         # Ищем последний активный сон
         result = await db_session.execute(
             select(SleepRecord)
-            .where(SleepRecord.user_id == user.id, SleepRecord.end_time.is_(None))
+            .where(SleepRecord.user_telegram_id == user.telegram_id, SleepRecord.end_time.is_(None))
             .order_by(SleepRecord.start_time.desc())
         )
         last_sleep = result.scalars().first()
 
         if not last_sleep:
-            await message.answer("Не найдено активного сна. Используйте команду /sleep для начала записи.")
+            await message.answer("Не найдено активного сна. Используйте кнопку 'Сон' для начала записи.")
             return
 
-        last_sleep.end_time = datetime.now(TZ)
-        await db_session.commit()
-
-        duration = (last_sleep.end_time - last_sleep.start_time).seconds // 60  # минуты
-        await message.answer(f"Сон завершен! Малышка спала {duration} минут.")
-    await message.answer("Выберите действие:", reply_markup=main_keyboard)
-
-
-
-@dp.message(lambda message: message.text == "Завершить сон")
-async def wake_up_button(message: Message, session: AsyncSession = get_db()):
-    """Фиксируем окончание сна при нажатии на кнопку"""
-    user_id = message.from_user.id
-
-    # Получаем активный сон
-    async for db_session in session:
-        result = await db_session.execute(
-            select(SleepRecord)
-            .where(SleepRecord.user_id == user_id, SleepRecord.end_time.is_(None))
-            .order_by(SleepRecord.start_time.desc())
-        )
-        last_sleep = result.scalars().first()
-
-        if not last_sleep:
-            await message.answer("Не найдено активного сна. Используйте команду /sleep для начала записи.")
-            return
-
-        last_sleep.end_time = datetime.now()
+        last_sleep.end_time = now
         await db_session.commit()
 
         duration = (last_sleep.end_time -
                     last_sleep.start_time).seconds // 60  # минуты
         await message.answer(f"Сон завершен! Малышка спала {duration} минут.")
-    await message.answer(
-        "Выберите действие:",
-        reply_markup=main_keyboard
-    )
+        await message.answer("Выберите действие:", reply_markup=main_keyboard)
 
 
 @dp.message(lambda message: message.text == "Питание")
@@ -243,29 +214,26 @@ async def ask_feed_amount(message: Message):
 async def save_feed_amount(message: Message, session: AsyncSession = get_db()):
     """Сохраняет количество молока в базе данных."""
     telegram_id = message.from_user.id
-    try:
-        feed_amount = int(message.text)
+    feed_amount = int(message.text)
 
-        async for db_session in session:
-            result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
-            user = result.scalars().first()
+    async for db_session in session:
+        # Ищем пользователя по telegram_id
+        result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalars().first()
 
-            if not user:
-                await message.answer("Ошибка! Вы не зарегистрированы. Отправьте /start.")
-                return
+        if not user:
+            await message.answer("Ошибка! Вы не зарегистрированы. Отправьте /start.")
+            return
 
-            # Создаем запись о кормлении
-            feed_record = FeedingRecord(
-                user_id=user.id, amount=feed_amount, timestamp=datetime.now(TZ))
-            db_session.add(feed_record)
-            await db_session.commit()
+        # Создаем запись о питании, используя user_telegram_id
+        feed_record = FeedingRecord(user_telegram_id=user.telegram_id, amount=feed_amount)
+        db_session.add(feed_record)
+        await db_session.commit()
 
-        await message.answer(
-            f"Объем питания: {feed_amount} мл сохранен! Выберите следующее действие.",
-            reply_markup=main_keyboard
-        )
-    except ValueError:
-        await message.answer("Ошибка! Введите число, например: 120.")
+    await message.answer(
+        f"Объем питания: {feed_amount} мл сохранен!",
+        reply_markup=main_keyboard
+    )
 
 
 @dp.message(lambda message: message.text == "Отмена")
