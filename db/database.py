@@ -18,10 +18,13 @@ engine = create_async_engine(DB_URL, echo=True)
 
 # Создаем фабрику сессий
 AsyncSessionLocal = sessionmaker(
-    bind=engine, class_=AsyncSession, expire_on_commit=False
+    bind=engine, class_=AsyncSession, expire_on_commit=False, autocommit=False
 )
 
-async def get_db() -> AsyncSession:
-    """Асинхронный генератор сессий БД."""
-    async with AsyncSessionLocal() as session:
+
+async def get_db():
+    session = AsyncSessionLocal()
+    try:
         yield session
+    finally:
+        await session.close()  # Гарантированное закрытие соединения
