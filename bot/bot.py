@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytz
 from aiogram import Bot, Dispatcher
@@ -49,7 +49,6 @@ sleep_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-
 # Клавиатура для записи сна (добавили кнопку "Питание")
 sleep_actions_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -58,7 +57,6 @@ sleep_actions_keyboard = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True
 )
-
 
 # Клавиатура для ввода объема питания
 feed_keyboard = ReplyKeyboardMarkup(
@@ -115,7 +113,7 @@ async def confirm_sleep_time(message: Message):
 
         # Создаем запись о сне
         sleep_record = SleepRecord(
-            user_telegram_id=user.telegram_id, start_time=now)
+            user_telegram_id=user.telegram_id, start_time=now.astimezone(pytz.utc))  # Сохраняем в UTC
         db_session.add(sleep_record)
         await db_session.commit()
 
@@ -141,6 +139,8 @@ async def manual_sleep_time(message: Message, state: FSMContext):
     try:
         custom_time = datetime.strptime(message.text, "%H:%M").time()
         custom_datetime = datetime.combine(datetime.today(), custom_time)
+        custom_datetime = TZ.localize(
+            custom_datetime)  # Добавляем временную зону
 
         async for db_session in get_db():  # Открываем сессию БД
             result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
@@ -151,7 +151,7 @@ async def manual_sleep_time(message: Message, state: FSMContext):
                 return
 
             sleep_record = SleepRecord(
-                user_telegram_id=user.telegram_id, start_time=custom_datetime)
+                user_telegram_id=user.telegram_id, start_time=custom_datetime.astimezone(pytz.utc))  # Сохраняем в UTC
             db_session.add(sleep_record)
             await db_session.commit()
 
@@ -190,8 +190,10 @@ async def wake_up_button(message: Message):
 
         last_sleep.end_time = now_utc  # Записываем UTC
         await db_session.commit()
-
-        duration = (last_sleep.end_time - last_sleep.start_time).seconds // 60
+        try:
+            duration = ((last_sleep.end_time - last_sleep.start_time).seconds) // 60
+        except Exception as e:
+            await message.answer(f"error - {e}")
         await message.answer(f"Сон завершен! Малышка спала {duration} минут.")
         await message.answer("Выберите действие:", reply_markup=main_keyboard)
 
@@ -252,7 +254,6 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)  # Настроим логирование
     await on_startup()  # Вызываем стартовые функции перед запуском
     await dp.start_polling(bot)  # Запускаем бота
-
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
