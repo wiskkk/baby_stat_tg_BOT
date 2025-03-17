@@ -29,7 +29,8 @@ TZ = pytz.timezone("Europe/Moscow")
 
 
 class SleepTimeState(StatesGroup):
-    waiting_for_time = State()  # Состояние ожидания ввода времени
+    waiting_for_time = State()
+    waiting_for_end_time = State()
 
 
 # Основная клавиатура
@@ -49,10 +50,11 @@ sleep_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# Клавиатура для записи сна (добавили кнопку "Питание")
+# Клавиатура для записи сна
 sleep_actions_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Завершить сон")],
+        [KeyboardButton(text="Завершить сон (текущее время)"),
+         KeyboardButton(text="Завершить сон (ввести время)")],
         [KeyboardButton(text="Питание")]
     ],
     resize_keyboard=True
@@ -132,6 +134,13 @@ async def change_sleep_time(message: Message, state: FSMContext):
     await state.set_state(SleepTimeState.waiting_for_time)
 
 
+@dp.message(lambda message: message.text == "Завершить сон (ввести время)")
+async def ask_manual_end_time(message: Message, state: FSMContext):
+    """Запрашивает у пользователя время завершения сна."""
+    await message.answer("Введите время завершения сна в формате HH:MM.")
+    await state.set_state(SleepTimeState.waiting_for_end_time)
+
+
 @dp.message(SleepTimeState.waiting_for_time)
 async def manual_sleep_time(message: Message, state: FSMContext):
     """Записывает пользовательское время сна."""
@@ -162,15 +171,75 @@ async def manual_sleep_time(message: Message, state: FSMContext):
         await message.answer(f"Ошибка {error}! Введите время в формате HH:MM.")
 
 
-@dp.message(lambda message: message.text == "Завершить сон")
-async def wake_up_button(message: Message):
-    """Фиксируем окончание сна с учетом часового пояса."""
+@dp.message(SleepTimeState.waiting_for_end_time)
+async def manual_end_time(message: Message, state: FSMContext):
+    """Обрабатывает введенное пользователем время завершения сна с проверкой."""
     telegram_id = message.from_user.id
-    now_msk = datetime.now(TZ)  # Точное время в Москве с учетом зоны
-    now_utc = now_msk.astimezone(pytz.utc)  # Преобразуем в UTC перед записью
+    try:
+        # Парсим и локализуем введенное время
+        custom_time = datetime.strptime(message.text, "%H:%M").time()
+        custom_datetime = datetime.combine(datetime.today(), custom_time)
+        custom_datetime = TZ.localize(
+            custom_datetime)  # Применяем временную зону
+
+        async for db_session in get_db():
+            result = await db_session.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+            user = result.scalars().first()
+
+            if not user:
+                await message.answer("Ошибка! Вы не зарегистрированы. Отправьте /start.")
+                return
+
+            result = await db_session.execute(
+                select(SleepRecord)
+                .where(SleepRecord.user_telegram_id == user.telegram_id, SleepRecord.end_time.is_(None))
+                .order_by(SleepRecord.start_time.desc())
+            )
+            last_sleep = result.scalars().first()
+
+            if not last_sleep:
+                await message.answer("Не найдено активного сна. Используйте кнопку 'Сон' для начала записи.")
+                return
+
+            # Сравниваем start_time и введённое end_time (обе в UTC)
+            custom_utc = custom_datetime.astimezone(pytz.utc)
+
+            if custom_utc <= last_sleep.start_time:
+                start_local = last_sleep.start_time.astimezone(
+                    TZ).strftime("%H:%M")
+                await message.answer(
+                    f"Ошибка: время завершения сна не может быть раньше или равно времени начала сна ({start_local}).\n"
+                    "Пожалуйста, введите корректное время."
+                )
+                return
+
+            last_sleep.end_time = custom_utc
+            await db_session.commit()
+
+            duration = (last_sleep.end_time -
+                        last_sleep.start_time).total_seconds() // 60
+            await message.answer(f"Сон завершен! Малышка спала {int(duration)} минут.")
+            await message.answer("Выберите действие:", reply_markup=main_keyboard)
+
+        await state.clear()  # Сброс состояния
+
+    except ValueError:
+        await message.answer("Неверный формат времени. Пожалуйста, введите время в формате HH:MM.")
+
+
+@dp.message(lambda message: message.text == "Завершить сон (текущее время)")
+async def wake_up_button(message: Message):
+    """Фиксирует окончание сна с текущим временем."""
+    telegram_id = message.from_user.id
+    now_msk = datetime.now(TZ)
+    now_utc = now_msk.astimezone(pytz.utc)
 
     async for db_session in get_db():
-        result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
+        result = await db_session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
         user = result.scalars().first()
 
         if not user:
@@ -188,13 +257,12 @@ async def wake_up_button(message: Message):
             await message.answer("Не найдено активного сна. Используйте кнопку 'Сон' для начала записи.")
             return
 
-        last_sleep.end_time = now_utc  # Записываем UTC
+        last_sleep.end_time = now_utc
         await db_session.commit()
-        try:
-            duration = ((last_sleep.end_time - last_sleep.start_time).seconds) // 60
-        except Exception as e:
-            await message.answer(f"error - {e}")
-        await message.answer(f"Сон завершен! Малышка спала {duration} минут.")
+
+        duration = (last_sleep.end_time -
+                    last_sleep.start_time).total_seconds() // 60
+        await message.answer(f"Сон завершен! Малыш спал {int(duration)} минут.")
         await message.answer("Выберите действие:", reply_markup=main_keyboard)
 
 
