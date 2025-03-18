@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytz
 from aiogram import Bot, Dispatcher
@@ -33,6 +33,25 @@ class SleepTimeState(StatesGroup):
     waiting_for_end_time = State()
 
 
+class ManualSleepStartState(StatesGroup):
+    waiting_for_time = State()
+    waiting_for_date_choice = State()
+
+
+class ManualEndSleepState(StatesGroup):
+    waiting_for_time = State()
+    waiting_for_date_choice = State()
+
+
+date_choice_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Сегодня"),
+         KeyboardButton(text="Вчера")],
+        [KeyboardButton(text="Отмена")]
+    ],
+    resize_keyboard=True
+)
+
 # Основная клавиатура
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -53,8 +72,8 @@ sleep_keyboard = ReplyKeyboardMarkup(
 # Клавиатура для записи сна
 sleep_actions_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Завершить сон (текущее время)"),
-         KeyboardButton(text="Завершить сон (ввести время)")],
+        [KeyboardButton(text="Завершить сон"),
+         KeyboardButton(text="Завершить сон вручную")],
         [KeyboardButton(text="Питание")]
     ],
     resize_keyboard=True
@@ -128,17 +147,133 @@ async def confirm_sleep_time(message: Message):
 
 @dp.message(lambda message: message.text == "✏ Изменить время")
 async def change_sleep_time(message: Message, state: FSMContext):
-    """Переводит бота в режим ожидания пользовательского времени."""
-    await message.answer("Введите новое время в формате HH:MM.")
-    # Устанавливаем состояние
-    await state.set_state(SleepTimeState.waiting_for_time)
+    await message.answer("Введите время начала сна в формате HH:MM.")
+    await state.set_state(ManualSleepStartState.waiting_for_time)
 
 
-@dp.message(lambda message: message.text == "Завершить сон (ввести время)")
-async def ask_manual_end_time(message: Message, state: FSMContext):
-    """Запрашивает у пользователя время завершения сна."""
+@dp.message(lambda message: message.text == "Завершить сон вручную")
+async def manual_wake_up_start(message: Message, state: FSMContext):
+    """Запрашиваем время завершения сна вручную."""
     await message.answer("Введите время завершения сна в формате HH:MM.")
-    await state.set_state(SleepTimeState.waiting_for_end_time)
+    await state.set_state(ManualEndSleepState.waiting_for_time)
+
+
+@dp.message(ManualSleepStartState.waiting_for_time)
+async def manual_sleep_time_input(message: Message, state: FSMContext):
+    try:
+        custom_time = datetime.strptime(message.text, "%H:%M").time()
+        await state.update_data(custom_time=custom_time)
+        await state.set_state(ManualSleepStartState.waiting_for_date_choice)
+
+        await message.answer("Выберите дату начала сна:", reply_markup=date_choice_keyboard)
+    except ValueError:
+        await message.answer("Ошибка! Введите время в формате HH:MM.")
+
+
+@dp.message(ManualEndSleepState.waiting_for_time)
+async def manual_wake_up_time_input(message: Message, state: FSMContext):
+    """Сохраняем введенное время и запрашиваем дату."""
+    try:
+        custom_time = datetime.strptime(message.text, "%H:%M").time()
+        await state.update_data(custom_time=custom_time)
+        await state.set_state(ManualEndSleepState.waiting_for_date_choice)
+
+        await message.answer("Выберите дату:", reply_markup=date_choice_keyboard)
+    except ValueError:
+        await message.answer("Ошибка! Введите время в формате HH:MM.")
+
+
+@dp.message(ManualSleepStartState.waiting_for_date_choice)
+async def manual_sleep_date_choice(message: Message, state: FSMContext):
+    telegram_id = message.from_user.id
+    data = await state.get_data()
+
+    if message.text not in ["Сегодня", "Вчера"]:
+        await message.answer("Пожалуйста, выберите 'Сегодня' или 'Вчера'.")
+        return
+
+    chosen_date = datetime.today().date()
+    if message.text == "Вчера":
+        chosen_date -= timedelta(days=1)
+
+    custom_datetime = datetime.combine(chosen_date, data["custom_time"])
+    custom_datetime = TZ.localize(custom_datetime).astimezone(pytz.utc)
+
+    async for db_session in get_db():
+        result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalars().first()
+
+        if not user:
+            await message.answer("Ошибка! Вы не зарегистрированы. Отправьте /start.")
+            await state.clear()
+            return
+
+        sleep_record = SleepRecord(
+            user_telegram_id=user.telegram_id,
+            start_time=custom_datetime
+        )
+        db_session.add(sleep_record)
+        await db_session.commit()
+
+        await message.answer("Сон зафиксирован по введенному времени!")
+        await message.answer("Когда малыш проснется, нажмите 'Завершить сон'.", reply_markup=sleep_actions_keyboard)
+
+    await state.clear()
+
+
+@dp.message(ManualEndSleepState.waiting_for_date_choice)
+async def manual_wake_up_date_choice(message: Message, state: FSMContext):
+    telegram_id = message.from_user.id
+    data = await state.get_data()
+
+    if message.text not in ["Сегодня", "Вчера"]:
+        await message.answer("Пожалуйста, выберите 'Сегодня' или 'Вчера'.")
+        return
+
+    # Получаем дату и объединяем с временем
+    chosen_date = datetime.today().date()
+    if message.text == "Вчера":
+        chosen_date = chosen_date - timedelta(days=1)
+
+    combined_datetime = datetime.combine(chosen_date, data["custom_time"])
+    combined_datetime = TZ.localize(combined_datetime).astimezone(pytz.utc)
+
+    async for db_session in get_db():
+        result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalars().first()
+
+        if not user:
+            await message.answer("Ошибка! Вы не зарегистрированы. Отправьте /start.")
+            await state.clear()
+            return
+
+        # Находим активный сон
+        result = await db_session.execute(
+            select(SleepRecord)
+            .where(SleepRecord.user_telegram_id == telegram_id, SleepRecord.end_time.is_(None))
+            .order_by(SleepRecord.start_time.desc())
+        )
+        sleep_record = result.scalars().first()
+
+        if not sleep_record:
+            await message.answer("Не найдено активного сна.")
+            await state.clear()
+            return
+
+        if sleep_record.start_time > combined_datetime:
+            await message.answer("Время окончания сна не может быть раньше времени начала сна!")
+            await state.clear()
+            return
+
+        # Записываем завершение сна
+        sleep_record.end_time = combined_datetime
+        await db_session.commit()
+
+        duration = ((sleep_record.end_time -
+                    sleep_record.start_time).seconds) // 60
+        await message.answer(f"Сон завершен вручную! Продолжительность: {duration} минут.", reply_markup=main_keyboard)
+
+    await state.clear()
 
 
 @dp.message(SleepTimeState.waiting_for_time)
@@ -229,7 +364,7 @@ async def manual_end_time(message: Message, state: FSMContext):
         await message.answer("Неверный формат времени. Пожалуйста, введите время в формате HH:MM.")
 
 
-@dp.message(lambda message: message.text == "Завершить сон (текущее время)")
+@dp.message(lambda message: message.text == "Завершить сон")
 async def wake_up_button(message: Message):
     """Фиксирует окончание сна с текущим временем."""
     telegram_id = message.from_user.id
