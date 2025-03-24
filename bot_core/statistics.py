@@ -3,7 +3,6 @@ from datetime import datetime, time, timedelta
 import pytz
 from sqlalchemy.future import select
 
-from bot.bot import bot
 from db.database import get_db
 from db.models import FeedingRecord, SleepRecord
 
@@ -134,22 +133,3 @@ async def collect_full_daily_statistics(user_id: int, date: datetime) -> dict:
         "sleep": sleep_stats["sleep"]
     }
     return full_stats
-
-
-async def send_daily_statistics(user_id: int):
-    today_msk = datetime.now(TZ)
-    stats = await collect_full_daily_statistics(user_id, today_msk)
-
-    message = (
-        f"📊 Статистика за {stats['date']}:\n\n"
-        f"🍼 Питание:\n"
-        f"— Днем: {stats['feeding']['day_ml']} мл\n"
-        f"— Ночью: {stats['feeding']['night_ml']} мл\n"
-        f"— Всего: {stats['feeding']['total_ml']} мл\n\n"
-        f"😴 Сон:\n"
-        f"— Днем: {stats['sleep']['day_minutes']} мин\n"
-        f"— Ночью: {stats['sleep']['night_minutes']} мин\n"
-        f"— Всего: {stats['sleep']['total_minutes']} мин"
-    )
-
-    await bot.send_message(chat_id=user_id, text=message)

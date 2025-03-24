@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from sqlalchemy import func
 from sqlalchemy.future import select
 
-from bot.statistics import send_daily_statistics
+from bot_core.statistics import collect_full_daily_statistics
 from db.database import get_db
 from db.models import FeedingRecord, SleepRecord, User
 
@@ -32,8 +32,27 @@ dp: Dispatcher = Dispatcher()
 
 TZ = pytz.timezone("Europe/Moscow")
 
+
+async def send_daily_statistics(user_id: int):
+    today_msk = datetime.now(TZ)
+    stats = await collect_full_daily_statistics(user_id, today_msk)
+
+    message = (
+        f"📊 Статистика за {stats['date']}:\n\n"
+        f"🍼 Питание:\n"
+        f"— Днем: {stats['feeding']['day_ml']} мл\n"
+        f"— Ночью: {stats['feeding']['night_ml']} мл\n"
+        f"— Всего: {stats['feeding']['total_ml']} мл\n\n"
+        f"😴 Сон:\n"
+        f"— Днем: {stats['sleep']['day_minutes']} мин\n"
+        f"— Ночью: {stats['sleep']['night_minutes']} мин\n"
+        f"— Всего: {stats['sleep']['total_minutes']} мин"
+    )
+
+    await bot.send_message(chat_id=user_id, text=message)
+
 # Установим cron-задачу на 00:00 по Москве
-aiocron.crontab('0 0 * * *', func=send_daily_statistics, tz='Europe/Moscow')
+aiocron.crontab('0 0 * * *', func=send_daily_statistics, tz=TZ)
 
 
 class SleepTimeState(StatesGroup):
@@ -64,7 +83,7 @@ date_choice_keyboard = ReplyKeyboardMarkup(
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Сон"), KeyboardButton(text="Питание")],
-        [KeyboardButton(text="/stats")]
+        [KeyboardButton(text="Статистика")]
     ],
     resize_keyboard=True
 )
@@ -456,7 +475,7 @@ async def cancel_feed(message: Message):
     )
 
 
-@dp.message(Command("stats"))
+@dp.message(lambda message: message.text == "Статистика")
 async def send_stats_handler(message: Message):
     """Отправляет пользователю статистику за день, неделю и месяц."""
     telegram_id = message.from_user.id
@@ -549,7 +568,7 @@ async def send_stats_handler(message: Message):
         f"🥛 Питание: {month_feed} мл | 😴 Сон: {month_sleep_minutes} мин"
     )
 
-    await message.answer(text, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+    await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard)
 
 
 async def on_startup() -> None:
