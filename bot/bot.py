@@ -1,16 +1,21 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
+import aiocron
 import pytz
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
-from dotenv import load_dotenv
-from sqlalchemy.future import select
-from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (KeyboardButton, Message, ReplyKeyboardMarkup,
+                           ReplyKeyboardRemove)
+from dotenv import load_dotenv
+from sqlalchemy import func
+from sqlalchemy.future import select
+
+from bot.statistics import send_daily_statistics
 from db.database import get_db
 from db.models import FeedingRecord, SleepRecord, User
 
@@ -26,6 +31,9 @@ bot: Bot = Bot(token=BOT_TOKEN)
 dp: Dispatcher = Dispatcher()
 
 TZ = pytz.timezone("Europe/Moscow")
+
+# Установим cron-задачу на 00:00 по Москве
+aiocron.crontab('0 0 * * *', func=send_daily_statistics, tz='Europe/Moscow')
 
 
 class SleepTimeState(StatesGroup):
@@ -55,7 +63,8 @@ date_choice_keyboard = ReplyKeyboardMarkup(
 # Основная клавиатура
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Сон"), KeyboardButton(text="Питание")]
+        [KeyboardButton(text="Сон"), KeyboardButton(text="Питание")],
+        [KeyboardButton(text="/stats")]
     ],
     resize_keyboard=True
 )
@@ -445,6 +454,102 @@ async def cancel_feed(message: Message):
         "Ввод отменен. Выберите действие:",
         reply_markup=main_keyboard  # возвращаемся к стартовой клавиатуре
     )
+
+
+@dp.message(Command("stats"))
+async def send_stats_handler(message: Message):
+    """Отправляет пользователю статистику за день, неделю и месяц."""
+    telegram_id = message.from_user.id
+    today = datetime.now(TZ).date()
+
+    # Границы дней
+    day_start = datetime.combine(today, time(6, 0)).astimezone(TZ)
+    day_end = datetime.combine(today, time(22, 0)).astimezone(TZ)
+
+    # Границы недели и месяца
+    week_start = today - timedelta(days=7)
+    month_start = today - timedelta(days=30)
+
+    async for db_session in get_db():
+        # === ПИТАНИЕ за сегодня ===
+        feeds_today = await db_session.execute(
+            select(FeedingRecord)
+            .where(FeedingRecord.user_telegram_id == telegram_id,
+                   func.date(FeedingRecord.timestamp) == today)
+        )
+        feeds = feeds_today.scalars().all()
+        day_feed = sum(f.amount for f in feeds if day_start <=
+                       f.timestamp.astimezone(TZ) <= day_end)
+        night_feed = sum(f.amount for f in feeds if not (
+            day_start <= f.timestamp.astimezone(TZ) <= day_end))
+
+        # === СОН за сегодня ===
+        sleeps_today = await db_session.execute(
+            select(SleepRecord)
+            .where(SleepRecord.user_telegram_id == telegram_id,
+                   SleepRecord.end_time.isnot(None),
+                   func.date(SleepRecord.end_time) == today)
+        )
+        sleeps = sleeps_today.scalars().all()
+
+        day_sleep = 0
+        night_sleep = 0
+        for s in sleeps:
+            end_msk = s.end_time.astimezone(TZ)
+            duration = int((s.end_time - s.start_time).total_seconds() // 60)
+            if day_start <= end_msk <= day_end:
+                day_sleep += duration
+            else:
+                night_sleep += duration
+
+        # === Питание за неделю и месяц ===
+        feeds_week = await db_session.execute(
+            select(func.sum(FeedingRecord.amount))
+            .where(FeedingRecord.user_telegram_id == telegram_id,
+                   FeedingRecord.timestamp >= week_start)
+        )
+        week_feed = feeds_week.scalar() or 0
+
+        feeds_month = await db_session.execute(
+            select(func.sum(FeedingRecord.amount))
+            .where(FeedingRecord.user_telegram_id == telegram_id,
+                   FeedingRecord.timestamp >= month_start)
+        )
+        month_feed = feeds_month.scalar() or 0
+
+        # === Сон за неделю и месяц ===
+        sleeps_week = await db_session.execute(
+            select(SleepRecord)
+            .where(SleepRecord.user_telegram_id == telegram_id,
+                   SleepRecord.end_time.isnot(None),
+                   SleepRecord.end_time >= week_start)
+        )
+        week_sleeps = sleeps_week.scalars().all()
+        week_sleep_minutes = sum(
+            int((s.end_time - s.start_time).total_seconds() // 60) for s in week_sleeps)
+
+        sleeps_month = await db_session.execute(
+            select(SleepRecord)
+            .where(SleepRecord.user_telegram_id == telegram_id,
+                   SleepRecord.end_time.isnot(None),
+                   SleepRecord.end_time >= month_start)
+        )
+        month_sleeps = sleeps_month.scalars().all()
+        month_sleep_minutes = sum(
+            int((s.end_time - s.start_time).total_seconds() // 60) for s in month_sleeps)
+
+    # Формируем отчет
+    text = (
+        f"📊 <b>Статистика за {today.strftime('%d.%m.%Y')}:</b>\n"
+        f"🥛 Питание: День — {day_feed} мл, Ночь — {night_feed} мл\n"
+        f"😴 Сон: День — {day_sleep} мин, Ночь — {night_sleep} мин\n\n"
+        f"📅 За неделю:\n"
+        f"🥛 Питание: {week_feed} мл | 😴 Сон: {week_sleep_minutes} мин\n"
+        f"📅 За месяц:\n"
+        f"🥛 Питание: {month_feed} мл | 😴 Сон: {month_sleep_minutes} мин"
+    )
+
+    await message.answer(text, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
 
 
 async def on_startup() -> None:
