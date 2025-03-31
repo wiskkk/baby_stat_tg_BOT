@@ -51,8 +51,19 @@ async def send_daily_statistics(user_id: int):
 
     await bot.send_message(chat_id=user_id, text=message)
 
+
+async def send_statistics_to_all_users():
+    """Функция для отправки статистики всем пользователям."""
+    async for session in get_db():
+        users = await session.execute(select(User.telegram_id))
+        user_ids = [user[0] for user in users.fetchall()]  # Получаем список ID
+
+    for user_id in user_ids:
+        # Отправляем статистику каждому пользователю
+        await send_daily_statistics(user_id)
+
 # Установим cron-задачу на 00:00 по Москве
-aiocron.crontab('0 0 * * *', func=send_daily_statistics, tz=TZ)
+aiocron.crontab('0 0 * * *', func=send_statistics_to_all_users, tz=TZ)
 
 
 class SleepTimeState(StatesGroup):
