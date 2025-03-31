@@ -9,8 +9,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import (KeyboardButton, Message, ReplyKeyboardMarkup,
-                           ReplyKeyboardRemove)
+from aiogram.types import (KeyboardButton, Message, ReplyKeyboardMarkup)
 from dotenv import load_dotenv
 from sqlalchemy import func
 from sqlalchemy.future import select
@@ -22,6 +21,7 @@ from db.models import FeedingRecord, SleepRecord, User
 # Загружаем переменные окружения
 load_dotenv()
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
+CHAT_ID: str = os.getenv('CHAT_ID', '')
 
 if not BOT_TOKEN:
     raise ValueError("Отсутствует BOT_TOKEN в .env")
@@ -33,9 +33,9 @@ dp: Dispatcher = Dispatcher()
 TZ = pytz.timezone("Europe/Moscow")
 
 
-async def send_daily_statistics(user_id: int):
+async def send_daily_statistics(chat_id: int):
     today_msk = datetime.now(TZ)
-    stats = await collect_full_daily_statistics(user_id, today_msk)
+    stats = await collect_full_daily_statistics(chat_id, today_msk)
 
     message = (
         f"📊 Статистика за {stats['date']}:\n\n"
@@ -49,18 +49,18 @@ async def send_daily_statistics(user_id: int):
         f"— Всего: {stats['sleep']['total_minutes']} мин"
     )
 
-    await bot.send_message(chat_id=user_id, text=message)
+    await bot.send_message(chat_id=chat_id, text=message)
 
 
 async def send_statistics_to_all_users():
     """Функция для отправки статистики всем пользователям."""
     async for session in get_db():
-        users = await session.execute(select(User.telegram_id))
-        user_ids = [user[0] for user in users.fetchall()]  # Получаем список ID
+        users = await session.execute(select(User.chat_id))
+        chat_ids = [user[0] for user in users.fetchall()]  # Получаем список ID
 
-    for user_id in user_ids:
+    for chat_id in chat_ids:
         # Отправляем статистику каждому пользователю
-        await send_daily_statistics(user_id)
+        await send_daily_statistics(chat_id)
 
 # Установим cron-задачу на 00:00 по Москве
 aiocron.crontab('0 0 * * *', func=send_statistics_to_all_users, tz=TZ)
@@ -129,17 +129,17 @@ feed_keyboard = ReplyKeyboardMarkup(
 
 @dp.message(Command("start"))
 async def start_handler(message: Message) -> None:
-    telegram_id = message.from_user.id
+    chat_id = int(CHAT_ID)
     name = message.from_user.full_name
 
     async for session in get_db():
         # Проверяем, есть ли пользователь
-        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+        result = await session.execute(select(User).where(User.chat_id == chat_id))
         user = result.scalars().first()
 
         if not user:
             # Создаем нового пользователя
-            new_user = User(telegram_id=telegram_id, name=name)
+            new_user = User(chat_id=chat_id, name=name)
             session.add(new_user)
             await session.commit()
 
@@ -160,11 +160,11 @@ async def ask_sleep_time(message: Message):
 @dp.message(lambda message: message.text == "✅ Подтвердить")
 async def confirm_sleep_time(message: Message):
     """Фиксируем начало сна с текущим временем и показываем новые кнопки."""
-    telegram_id = message.from_user.id
+    chat_id = int(CHAT_ID)
     now = datetime.now(TZ)
 
     async for db_session in get_db():
-        result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
+        result = await db_session.execute(select(User).where(User.chat_id == chat_id))
         user = result.scalars().first()
 
         if not user:
@@ -173,7 +173,7 @@ async def confirm_sleep_time(message: Message):
 
         # Создаем запись о сне
         sleep_record = SleepRecord(
-            user_telegram_id=user.telegram_id, start_time=now.astimezone(pytz.utc))  # Сохраняем в UTC
+            chat_id=user.chat_id, start_time=now.astimezone(pytz.utc))  # Сохраняем в UTC
         db_session.add(sleep_record)
         await db_session.commit()
 
@@ -224,7 +224,7 @@ async def manual_wake_up_time_input(message: Message, state: FSMContext):
 
 @dp.message(ManualSleepStartState.waiting_for_date_choice)
 async def manual_sleep_date_choice(message: Message, state: FSMContext):
-    telegram_id = message.from_user.id
+    chat_id = int(CHAT_ID)
     data = await state.get_data()
 
     if message.text not in ["Сегодня", "Вчера"]:
@@ -239,7 +239,7 @@ async def manual_sleep_date_choice(message: Message, state: FSMContext):
     custom_datetime = TZ.localize(custom_datetime).astimezone(pytz.utc)
 
     async for db_session in get_db():
-        result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
+        result = await db_session.execute(select(User).where(User.chat_id == chat_id))
         user = result.scalars().first()
 
         if not user:
@@ -248,7 +248,7 @@ async def manual_sleep_date_choice(message: Message, state: FSMContext):
             return
 
         sleep_record = SleepRecord(
-            user_telegram_id=user.telegram_id,
+            chat_id=user.chat_id,
             start_time=custom_datetime
         )
         db_session.add(sleep_record)
@@ -262,7 +262,7 @@ async def manual_sleep_date_choice(message: Message, state: FSMContext):
 
 @dp.message(ManualEndSleepState.waiting_for_date_choice)
 async def manual_wake_up_date_choice(message: Message, state: FSMContext):
-    telegram_id = message.from_user.id
+    chat_id = int(CHAT_ID)
     data = await state.get_data()
 
     if message.text not in ["Сегодня", "Вчера"]:
@@ -278,7 +278,7 @@ async def manual_wake_up_date_choice(message: Message, state: FSMContext):
     combined_datetime = TZ.localize(combined_datetime).astimezone(pytz.utc)
 
     async for db_session in get_db():
-        result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
+        result = await db_session.execute(select(User).where(User.chat_id == chat_id))
         user = result.scalars().first()
 
         if not user:
@@ -289,7 +289,7 @@ async def manual_wake_up_date_choice(message: Message, state: FSMContext):
         # Находим активный сон
         result = await db_session.execute(
             select(SleepRecord)
-            .where(SleepRecord.user_telegram_id == telegram_id, SleepRecord.end_time.is_(None))
+            .where(SleepRecord.chat_id == chat_id, SleepRecord.end_time.is_(None))
             .order_by(SleepRecord.start_time.desc())
         )
         sleep_record = result.scalars().first()
@@ -318,7 +318,7 @@ async def manual_wake_up_date_choice(message: Message, state: FSMContext):
 @dp.message(SleepTimeState.waiting_for_time)
 async def manual_sleep_time(message: Message, state: FSMContext):
     """Записывает пользовательское время сна."""
-    telegram_id = message.from_user.id
+    chat_id = int(CHAT_ID)
     try:
         custom_time = datetime.strptime(message.text, "%H:%M").time()
         custom_datetime = datetime.combine(datetime.today(), custom_time)
@@ -326,7 +326,7 @@ async def manual_sleep_time(message: Message, state: FSMContext):
             custom_datetime)  # Добавляем временную зону
 
         async for db_session in get_db():  # Открываем сессию БД
-            result = await db_session.execute(select(User).where(User.telegram_id == telegram_id))
+            result = await db_session.execute(select(User).where(User.chat_id == chat_id))
             user = result.scalars().first()
 
             if not user:
@@ -334,7 +334,7 @@ async def manual_sleep_time(message: Message, state: FSMContext):
                 return
 
             sleep_record = SleepRecord(
-                user_telegram_id=user.telegram_id, start_time=custom_datetime.astimezone(pytz.utc))  # Сохраняем в UTC
+                chat_id=user.chat_id, start_time=custom_datetime.astimezone(pytz.utc))  # Сохраняем в UTC
             db_session.add(sleep_record)
             await db_session.commit()
 
@@ -348,7 +348,7 @@ async def manual_sleep_time(message: Message, state: FSMContext):
 @dp.message(SleepTimeState.waiting_for_end_time)
 async def manual_end_time(message: Message, state: FSMContext):
     """Обрабатывает введенное пользователем время завершения сна с проверкой."""
-    telegram_id = message.from_user.id
+    chat_id = int(CHAT_ID)
     try:
         # Парсим и локализуем введенное время
         custom_time = datetime.strptime(message.text, "%H:%M").time()
@@ -358,7 +358,7 @@ async def manual_end_time(message: Message, state: FSMContext):
 
         async for db_session in get_db():
             result = await db_session.execute(
-                select(User).where(User.telegram_id == telegram_id)
+                select(User).where(User.chat_id == chat_id)
             )
             user = result.scalars().first()
 
@@ -368,7 +368,7 @@ async def manual_end_time(message: Message, state: FSMContext):
 
             result = await db_session.execute(
                 select(SleepRecord)
-                .where(SleepRecord.user_telegram_id == user.telegram_id, SleepRecord.end_time.is_(None))
+                .where(SleepRecord.chat_id == user.chat_id, SleepRecord.end_time.is_(None))
                 .order_by(SleepRecord.start_time.desc())
             )
             last_sleep = result.scalars().first()
@@ -406,13 +406,13 @@ async def manual_end_time(message: Message, state: FSMContext):
 @dp.message(lambda message: message.text == "Завершить сон")
 async def wake_up_button(message: Message):
     """Фиксирует окончание сна с текущим временем."""
-    telegram_id = message.from_user.id
+    chat_id = int(CHAT_ID)
     now_msk = datetime.now(TZ)
     now_utc = now_msk.astimezone(pytz.utc)
 
     async for db_session in get_db():
         result = await db_session.execute(
-            select(User).where(User.telegram_id == telegram_id)
+            select(User).where(User.chat_id == chat_id)
         )
         user = result.scalars().first()
 
@@ -422,7 +422,7 @@ async def wake_up_button(message: Message):
 
         result = await db_session.execute(
             select(SleepRecord)
-            .where(SleepRecord.user_telegram_id == user.telegram_id, SleepRecord.end_time.is_(None))
+            .where(SleepRecord.chat_id == user.chat_id, SleepRecord.end_time.is_(None))
             .order_by(SleepRecord.start_time.desc())
         )
         last_sleep = result.scalars().first()
@@ -449,23 +449,23 @@ async def ask_feed_amount(message: Message):
     )
 
 
-@dp.message(lambda message: message.text.isdigit())
+@dp.message(lambda message: message.text and message.text.isdigit())
 async def save_feed_amount(message: Message):
     """Сохраняет количество молока в базе данных без привязки к сну."""
-    telegram_id = message.from_user.id
     feed_amount = int(message.text)
 
     async for db_session in get_db():
+        chat_id = int(CHAT_ID)
         # Записываем питание без проверки сна
         feed_record = FeedingRecord(
-            user_telegram_id=telegram_id, amount=feed_amount)
+            chat_id=chat_id, amount=feed_amount)
         db_session.add(feed_record)
         await db_session.commit()
 
         # Проверяем, идет ли сейчас сон
         result = await db_session.execute(
             select(SleepRecord)
-            .where(SleepRecord.user_telegram_id == telegram_id, SleepRecord.end_time.is_(None))
+            .where(SleepRecord.chat_id == chat_id, SleepRecord.end_time.is_(None))
         )
         active_sleep = result.scalars().first()
 
@@ -489,7 +489,7 @@ async def cancel_feed(message: Message):
 @dp.message(lambda message: message.text == "Статистика")
 async def send_stats_handler(message: Message):
     """Отправляет пользователю статистику за день, неделю и месяц."""
-    telegram_id = message.from_user.id
+    chat_id = int(CHAT_ID)
     today = datetime.now(TZ).date()
 
     # Границы дней
@@ -504,7 +504,7 @@ async def send_stats_handler(message: Message):
         # === ПИТАНИЕ за сегодня ===
         feeds_today = await db_session.execute(
             select(FeedingRecord)
-            .where(FeedingRecord.user_telegram_id == telegram_id,
+            .where(FeedingRecord.chat_id == chat_id,
                    func.date(FeedingRecord.timestamp) == today)
         )
         feeds = feeds_today.scalars().all()
@@ -516,7 +516,7 @@ async def send_stats_handler(message: Message):
         # === СОН за сегодня ===
         sleeps_today = await db_session.execute(
             select(SleepRecord)
-            .where(SleepRecord.user_telegram_id == telegram_id,
+            .where(SleepRecord.chat_id == chat_id,
                    SleepRecord.end_time.isnot(None),
                    func.date(SleepRecord.end_time) == today)
         )
@@ -535,14 +535,14 @@ async def send_stats_handler(message: Message):
         # === Питание за неделю и месяц ===
         feeds_week = await db_session.execute(
             select(func.sum(FeedingRecord.amount))
-            .where(FeedingRecord.user_telegram_id == telegram_id,
+            .where(FeedingRecord.chat_id == chat_id,
                    FeedingRecord.timestamp >= week_start)
         )
         week_feed = feeds_week.scalar() or 0
 
         feeds_month = await db_session.execute(
             select(func.sum(FeedingRecord.amount))
-            .where(FeedingRecord.user_telegram_id == telegram_id,
+            .where(FeedingRecord.chat_id == chat_id,
                    FeedingRecord.timestamp >= month_start)
         )
         month_feed = feeds_month.scalar() or 0
@@ -550,7 +550,7 @@ async def send_stats_handler(message: Message):
         # === Сон за неделю и месяц ===
         sleeps_week = await db_session.execute(
             select(SleepRecord)
-            .where(SleepRecord.user_telegram_id == telegram_id,
+            .where(SleepRecord.chat_id == chat_id,
                    SleepRecord.end_time.isnot(None),
                    SleepRecord.end_time >= week_start)
         )
@@ -560,7 +560,7 @@ async def send_stats_handler(message: Message):
 
         sleeps_month = await db_session.execute(
             select(SleepRecord)
-            .where(SleepRecord.user_telegram_id == telegram_id,
+            .where(SleepRecord.chat_id == chat_id,
                    SleepRecord.end_time.isnot(None),
                    SleepRecord.end_time >= month_start)
         )
