@@ -1,0 +1,38 @@
+services:
+  # PostgreSQL
+  - type: postgres
+    name: bot-postgres
+    plan: free
+    envVars:
+      - key: POSTGRES_USER
+        value: bot_user
+      - key: POSTGRES_PASSWORD
+        value: bot_password  # Можно заменить на fromDatabase.password
+      - key: POSTGRES_DB
+        value: bot_db
+
+  # Telegram бот (основной сервис)
+  - type: web
+    name: telegram-bot
+    runtime: docker
+    plan: free
+    build:
+      dockerfile: Dockerfile
+    envVars:
+      - key: BOT_TOKEN
+        sync: false  # Задайте вручную в Dashboard
+      - key: DB_HOST
+        fromDatabase:
+          name: bot-postgres
+          property: host
+      - key: DB_PORT
+        value: 5432  # Стандартный порт
+      - key: DB_USER
+        value: bot_user
+      - key: DB_PASS
+        fromDatabase:
+          name: bot-postgres
+          property: password
+      - key: DB_NAME
+        value: bot_db
+    port: 8000
