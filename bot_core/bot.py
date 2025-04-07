@@ -444,7 +444,7 @@ async def wake_up_button(message: Message):
 async def ask_feed_amount(message: Message):
     """Запрашивает объем молока, не привязывая к сну, но меняет клавиатуру, если сон активен."""
     await message.answer(
-        "Введите объем выпитого молока в мл (например, 120).",
+        "Введите объем выпитого молока в мл.",
         reply_markup=feed_keyboard
     )
 

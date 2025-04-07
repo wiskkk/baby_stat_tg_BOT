@@ -9,7 +9,7 @@ from db.models import FeedingRecord, SleepRecord
 TZ = pytz.timezone("Europe/Moscow")
 
 
-async def collect_daily_feeding_statistics(user_id: int, date: datetime) -> dict:
+async def collect_daily_feeding_statistics(chat_id: int, date: datetime) -> dict:
     """
     Собирает статистику по питанию за указанный день.
 
@@ -30,7 +30,7 @@ async def collect_daily_feeding_statistics(user_id: int, date: datetime) -> dict
         result = await session.execute(
             select(FeedingRecord)
             .where(
-                FeedingRecord.user_telegram_id == user_id,
+                FeedingRecord.chat_id == chat_id,
                 FeedingRecord.timestamp >= start_of_day_utc,
                 FeedingRecord.timestamp < end_of_day_utc
             )
@@ -61,7 +61,7 @@ async def collect_daily_feeding_statistics(user_id: int, date: datetime) -> dict
     }
 
 
-async def collect_daily_sleep_statistics(user_id: int, date: datetime) -> dict:
+async def collect_daily_sleep_statistics(chat_id: int, date: datetime) -> dict:
     """
     Собирает статистику по сну за указанный день.
 
@@ -81,7 +81,7 @@ async def collect_daily_sleep_statistics(user_id: int, date: datetime) -> dict:
         result = await session.execute(
             select(SleepRecord)
             .where(
-                SleepRecord.user_telegram_id == user_id,
+                SleepRecord.chat_id == chat_id,
                 SleepRecord.end_time >= start_of_day_utc,
                 SleepRecord.end_time < end_of_day_utc
             )
@@ -116,7 +116,7 @@ async def collect_daily_sleep_statistics(user_id: int, date: datetime) -> dict:
     }
 
 
-async def collect_full_daily_statistics(user_id: int, date: datetime) -> dict:
+async def collect_full_daily_statistics(chat_id: int, date: datetime) -> dict:
     """
     Собирает полную статистику по питанию и сну за день.
 
@@ -124,8 +124,8 @@ async def collect_full_daily_statistics(user_id: int, date: datetime) -> dict:
     :param date: Дата в МСК
     :return: Объединенный словарь с итогами
     """
-    feeding_stats = await collect_daily_feeding_statistics(user_id, date)
-    sleep_stats = await collect_daily_sleep_statistics(user_id, date)
+    feeding_stats = await collect_daily_feeding_statistics(chat_id, date)
+    sleep_stats = await collect_daily_sleep_statistics(chat_id, date)
 
     full_stats = {
         "date": feeding_stats["date"],
