@@ -62,8 +62,8 @@ async def send_statistics_to_all_users():
         # Отправляем статистику каждому пользователю
         await send_daily_statistics(chat_id)
 
-# Установим cron-задачу на 00:00 по Москве
-aiocron.crontab('0 0 * * *', func=send_statistics_to_all_users, tz=TZ)
+# Установим cron-задачу на 23:59 по Москве
+aiocron.crontab('59 23 * * *', func=send_statistics_to_all_users, tz=TZ)
 
 
 class SleepTimeState(StatesGroup):
