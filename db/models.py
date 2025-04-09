@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, func, BigInteger
+from sqlalchemy import (BigInteger, Column, DateTime, ForeignKey, Integer,
+                        String, func)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 
