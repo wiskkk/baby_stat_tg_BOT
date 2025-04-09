@@ -32,6 +32,14 @@ dp: Dispatcher = Dispatcher()
 TZ = pytz.timezone("Europe/Moscow")
 
 
+def format_minutes(minutes: int) -> str:
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours > 0:
+        return f"{hours} ч {mins} мин"
+    return f"{mins} мин"
+
+
 async def build_statistics_text(chat_id: int) -> str:
     today = datetime.now(TZ).date()
 
@@ -120,11 +128,11 @@ async def build_statistics_text(chat_id: int) -> str:
     return (
         f"📊 <b>Статистика за {today.strftime('%d.%m.%Y')}:</b>\n"
         f"🥛 Питание: День — {day_feed} мл, Ночь — {night_feed} мл\n"
-        f"😴 Сон: День — {day_sleep} мин, Ночь — {night_sleep} мин\n\n"
+        f"😴 Сон: День — {format_minutes(day_sleep)} мин, Ночь — {format_minutes(night_sleep)} мин\n\n"
         f"📅 За неделю:\n"
-        f"🥛 Питание: {week_feed} мл | 😴 Сон: {week_sleep_minutes} мин\n"
+        f"🥛 Питание: {week_feed} мл | 😴 Сон: {format_minutes(week_sleep_minutes)} мин\n"
         f"📅 За месяц:\n"
-        f"🥛 Питание: {month_feed} мл | 😴 Сон: {month_sleep_minutes} мин"
+        f"🥛 Питание: {month_feed} мл | 😴 Сон: {format_minutes(month_sleep_minutes)} мин"
     )
 
 
