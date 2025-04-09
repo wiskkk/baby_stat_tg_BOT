@@ -9,19 +9,18 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import (KeyboardButton, Message, ReplyKeyboardMarkup)
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 from dotenv import load_dotenv
 from sqlalchemy import func
 from sqlalchemy.future import select
 
-from bot_core.statistics import collect_full_daily_statistics
 from db.database import get_db
 from db.models import FeedingRecord, SleepRecord, User
 
 # Загружаем переменные окружения
 load_dotenv()
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-CHAT_ID: str = os.getenv('CHAT_ID', '')
+CHAT_ID: str = os.getenv("CHAT_ID", "")
 
 if not BOT_TOKEN:
     raise ValueError("Отсутствует BOT_TOKEN в .env")
@@ -33,23 +32,105 @@ dp: Dispatcher = Dispatcher()
 TZ = pytz.timezone("Europe/Moscow")
 
 
-async def send_daily_statistics(chat_id: int):
-    today_msk = datetime.now(TZ)
-    stats = await collect_full_daily_statistics(chat_id, today_msk)
+async def build_statistics_text(chat_id: int) -> str:
+    today = datetime.now(TZ).date()
 
-    message = (
-        f"📊 Статистика за {stats['date']}:\n\n"
-        f"🍼 Питание:\n"
-        f"— Днем: {stats['feeding']['day_ml']} мл\n"
-        f"— Ночью: {stats['feeding']['night_ml']} мл\n"
-        f"— Всего: {stats['feeding']['total_ml']} мл\n\n"
-        f"😴 Сон:\n"
-        f"— Днем: {stats['sleep']['day_minutes']} мин\n"
-        f"— Ночью: {stats['sleep']['night_minutes']} мин\n"
-        f"— Всего: {stats['sleep']['total_minutes']} мин"
+    day_start = datetime.combine(today, time(6, 0)).astimezone(TZ)
+    day_end = datetime.combine(today, time(22, 0)).astimezone(TZ)
+
+    week_start = today - timedelta(days=7)
+    month_start = today - timedelta(days=30)
+
+    async for db_session in get_db():
+        feeds_today = await db_session.execute(
+            select(FeedingRecord).where(
+                FeedingRecord.chat_id == chat_id,
+                func.date(FeedingRecord.timestamp) == today,
+            )
+        )
+        feeds = feeds_today.scalars().all()
+        day_feed = sum(
+            f.amount
+            for f in feeds
+            if day_start <= f.timestamp.astimezone(TZ) <= day_end
+        )
+        night_feed = sum(
+            f.amount
+            for f in feeds
+            if not (day_start <= f.timestamp.astimezone(TZ) <= day_end)
+        )
+
+        sleeps_today = await db_session.execute(
+            select(SleepRecord).where(
+                SleepRecord.chat_id == chat_id,
+                SleepRecord.end_time.isnot(None),
+                func.date(SleepRecord.end_time) == today,
+            )
+        )
+        sleeps = sleeps_today.scalars().all()
+        day_sleep = night_sleep = 0
+        for s in sleeps:
+            end_msk = s.end_time.astimezone(TZ)
+            duration = int((s.end_time - s.start_time).total_seconds() // 60)
+            if day_start <= end_msk <= day_end:
+                day_sleep += duration
+            else:
+                night_sleep += duration
+
+        # Неделя и месяц — питание
+        feeds_week = await db_session.execute(
+            select(func.sum(FeedingRecord.amount)).where(
+                FeedingRecord.chat_id == chat_id, FeedingRecord.timestamp >= week_start
+            )
+        )
+        week_feed = feeds_week.scalar() or 0
+
+        feeds_month = await db_session.execute(
+            select(func.sum(FeedingRecord.amount)).where(
+                FeedingRecord.chat_id == chat_id, FeedingRecord.timestamp >= month_start
+            )
+        )
+        month_feed = feeds_month.scalar() or 0
+
+        # Сон неделя и месяц
+        sleeps_week = await db_session.execute(
+            select(SleepRecord).where(
+                SleepRecord.chat_id == chat_id,
+                SleepRecord.end_time.isnot(None),
+                SleepRecord.end_time >= week_start,
+            )
+        )
+        week_sleeps = sleeps_week.scalars().all()
+        week_sleep_minutes = sum(
+            int((s.end_time - s.start_time).total_seconds() // 60) for s in week_sleeps
+        )
+
+        sleeps_month = await db_session.execute(
+            select(SleepRecord).where(
+                SleepRecord.chat_id == chat_id,
+                SleepRecord.end_time.isnot(None),
+                SleepRecord.end_time >= month_start,
+            )
+        )
+        month_sleeps = sleeps_month.scalars().all()
+        month_sleep_minutes = sum(
+            int((s.end_time - s.start_time).total_seconds() // 60) for s in month_sleeps
+        )
+
+    return (
+        f"📊 <b>Статистика за {today.strftime('%d.%m.%Y')}:</b>\n"
+        f"🥛 Питание: День — {day_feed} мл, Ночь — {night_feed} мл\n"
+        f"😴 Сон: День — {day_sleep} мин, Ночь — {night_sleep} мин\n\n"
+        f"📅 За неделю:\n"
+        f"🥛 Питание: {week_feed} мл | 😴 Сон: {week_sleep_minutes} мин\n"
+        f"📅 За месяц:\n"
+        f"🥛 Питание: {month_feed} мл | 😴 Сон: {month_sleep_minutes} мин"
     )
 
-    await bot.send_message(chat_id=chat_id, text=message)
+
+async def send_daily_statistics(chat_id: int):
+    text = await build_statistics_text(chat_id)
+    await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
 
 async def send_statistics_to_all_users():
@@ -62,8 +143,9 @@ async def send_statistics_to_all_users():
         # Отправляем статистику каждому пользователю
         await send_daily_statistics(chat_id)
 
+
 # Установим cron-задачу на 23:59 по Москве
-aiocron.crontab('59 23 * * *', func=send_statistics_to_all_users, tz=TZ)
+aiocron.crontab("59 23 * * *", func=send_statistics_to_all_users, tz=TZ)
 
 
 class SleepTimeState(StatesGroup):
@@ -83,47 +165,44 @@ class ManualEndSleepState(StatesGroup):
 
 date_choice_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Сегодня"),
-         KeyboardButton(text="Вчера")],
-        [KeyboardButton(text="Отмена")]
+        [KeyboardButton(text="Сегодня"), KeyboardButton(text="Вчера")],
+        [KeyboardButton(text="Отмена")],
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
 )
 
 # Основная клавиатура
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Сон"), KeyboardButton(text="Питание")],
-        [KeyboardButton(text="Статистика")]
+        [KeyboardButton(text="Статистика")],
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
 )
 
 # Клавиатура для сна
 sleep_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="✅ Подтвердить"),
-         KeyboardButton(text="✏ Изменить время")]
+        [KeyboardButton(text="✅ Подтвердить"), KeyboardButton(text="✏ Изменить время")]
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
 )
 
 # Клавиатура для записи сна
 sleep_actions_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Завершить сон"),
-         KeyboardButton(text="Завершить сон вручную")],
-        [KeyboardButton(text="Питание")]
+        [
+            KeyboardButton(text="Завершить сон"),
+            KeyboardButton(text="Завершить сон вручную"),
+        ],
+        [KeyboardButton(text="Питание")],
     ],
-    resize_keyboard=True
+    resize_keyboard=True,
 )
 
 # Клавиатура для ввода объема питания
 feed_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Отмена")]
-    ],
-    resize_keyboard=True
+    keyboard=[[KeyboardButton(text="Отмена")]], resize_keyboard=True
 )
 
 
@@ -153,7 +232,7 @@ async def ask_sleep_time(message: Message):
     await message.answer(
         f"Текущее время сна: {now}\n"
         "Нажмите '✅ Подтвердить' для записи или '✏ Изменить время' для ввода вручную.",
-        reply_markup=sleep_keyboard
+        reply_markup=sleep_keyboard,
     )
 
 
@@ -173,14 +252,15 @@ async def confirm_sleep_time(message: Message):
 
         # Создаем запись о сне
         sleep_record = SleepRecord(
-            chat_id=user.chat_id, start_time=now.astimezone(pytz.utc))  # Сохраняем в UTC
+            chat_id=user.chat_id, start_time=now.astimezone(pytz.utc)
+        )  # Сохраняем в UTC
         db_session.add(sleep_record)
         await db_session.commit()
 
     await message.answer(
         "Сон зафиксирован! Когда малыш проснется, нажмите 'Завершить сон'.\n"
         "Вы также можете добавить питание во время сна.",
-        reply_markup=sleep_actions_keyboard  # Используем новую клавиатуру
+        reply_markup=sleep_actions_keyboard,  # Используем новую клавиатуру
     )
 
 
@@ -204,7 +284,9 @@ async def manual_sleep_time_input(message: Message, state: FSMContext):
         await state.update_data(custom_time=custom_time)
         await state.set_state(ManualSleepStartState.waiting_for_date_choice)
 
-        await message.answer("Выберите дату начала сна:", reply_markup=date_choice_keyboard)
+        await message.answer(
+            "Выберите дату начала сна:", reply_markup=date_choice_keyboard
+        )
     except ValueError:
         await message.answer("Ошибка! Введите время в формате HH:MM.")
 
@@ -247,15 +329,15 @@ async def manual_sleep_date_choice(message: Message, state: FSMContext):
             await state.clear()
             return
 
-        sleep_record = SleepRecord(
-            chat_id=user.chat_id,
-            start_time=custom_datetime
-        )
+        sleep_record = SleepRecord(chat_id=user.chat_id, start_time=custom_datetime)
         db_session.add(sleep_record)
         await db_session.commit()
 
         await message.answer("Сон зафиксирован по введенному времени!")
-        await message.answer("Когда малыш проснется, нажмите 'Завершить сон'.", reply_markup=sleep_actions_keyboard)
+        await message.answer(
+            "Когда малыш проснется, нажмите 'Завершить сон'.",
+            reply_markup=sleep_actions_keyboard,
+        )
 
     await state.clear()
 
@@ -300,7 +382,9 @@ async def manual_wake_up_date_choice(message: Message, state: FSMContext):
             return
 
         if sleep_record.start_time > combined_datetime:
-            await message.answer("Время окончания сна не может быть раньше времени начала сна!")
+            await message.answer(
+                "Время окончания сна не может быть раньше времени начала сна!"
+            )
             await state.clear()
             return
 
@@ -308,9 +392,11 @@ async def manual_wake_up_date_choice(message: Message, state: FSMContext):
         sleep_record.end_time = combined_datetime
         await db_session.commit()
 
-        duration = ((sleep_record.end_time -
-                    sleep_record.start_time).seconds) // 60
-        await message.answer(f"Сон завершен вручную! Продолжительность: {duration} минут.", reply_markup=main_keyboard)
+        duration = ((sleep_record.end_time - sleep_record.start_time).seconds) // 60
+        await message.answer(
+            f"Сон завершен вручную! Продолжительность: {duration} минут.",
+            reply_markup=main_keyboard,
+        )
 
     await state.clear()
 
@@ -322,25 +408,32 @@ async def manual_sleep_time(message: Message, state: FSMContext):
     try:
         custom_time = datetime.strptime(message.text, "%H:%M").time()
         custom_datetime = datetime.combine(datetime.today(), custom_time)
-        custom_datetime = TZ.localize(
-            custom_datetime)  # Добавляем временную зону
+        custom_datetime = TZ.localize(custom_datetime)  # Добавляем временную зону
 
         async for db_session in get_db():  # Открываем сессию БД
-            result = await db_session.execute(select(User).where(User.chat_id == chat_id))
+            result = await db_session.execute(
+                select(User).where(User.chat_id == chat_id)
+            )
             user = result.scalars().first()
 
             if not user:
-                await message.answer("Ошибка! Вы не зарегистрированы. Отправьте /start.")
+                await message.answer(
+                    "Ошибка! Вы не зарегистрированы. Отправьте /start."
+                )
                 return
 
             sleep_record = SleepRecord(
-                chat_id=user.chat_id, start_time=custom_datetime.astimezone(pytz.utc))  # Сохраняем в UTC
+                chat_id=user.chat_id, start_time=custom_datetime.astimezone(pytz.utc)
+            )  # Сохраняем в UTC
             db_session.add(sleep_record)
             await db_session.commit()
 
         await state.clear()  # Сбрасываем состояние
         await message.answer("Сон зафиксирован по введенному времени!")
-        await message.answer("Когда малыш проснется, нажмите 'Завершить сон'.", reply_markup=sleep_actions_keyboard)
+        await message.answer(
+            "Когда малыш проснется, нажмите 'Завершить сон'.",
+            reply_markup=sleep_actions_keyboard,
+        )
     except ValueError as error:
         await message.answer(f"Ошибка {error}! Введите время в формате HH:MM.")
 
@@ -353,8 +446,7 @@ async def manual_end_time(message: Message, state: FSMContext):
         # Парсим и локализуем введенное время
         custom_time = datetime.strptime(message.text, "%H:%M").time()
         custom_datetime = datetime.combine(datetime.today(), custom_time)
-        custom_datetime = TZ.localize(
-            custom_datetime)  # Применяем временную зону
+        custom_datetime = TZ.localize(custom_datetime)  # Применяем временную зону
 
         async for db_session in get_db():
             result = await db_session.execute(
@@ -363,26 +455,31 @@ async def manual_end_time(message: Message, state: FSMContext):
             user = result.scalars().first()
 
             if not user:
-                await message.answer("Ошибка! Вы не зарегистрированы. Отправьте /start.")
+                await message.answer(
+                    "Ошибка! Вы не зарегистрированы. Отправьте /start."
+                )
                 return
 
             result = await db_session.execute(
                 select(SleepRecord)
-                .where(SleepRecord.chat_id == user.chat_id, SleepRecord.end_time.is_(None))
+                .where(
+                    SleepRecord.chat_id == user.chat_id, SleepRecord.end_time.is_(None)
+                )
                 .order_by(SleepRecord.start_time.desc())
             )
             last_sleep = result.scalars().first()
 
             if not last_sleep:
-                await message.answer("Не найдено активного сна. Используйте кнопку 'Сон' для начала записи.")
+                await message.answer(
+                    "Не найдено активного сна. Используйте кнопку 'Сон' для начала записи."
+                )
                 return
 
             # Сравниваем start_time и введённое end_time (обе в UTC)
             custom_utc = custom_datetime.astimezone(pytz.utc)
 
             if custom_utc <= last_sleep.start_time:
-                start_local = last_sleep.start_time.astimezone(
-                    TZ).strftime("%H:%M")
+                start_local = last_sleep.start_time.astimezone(TZ).strftime("%H:%M")
                 await message.answer(
                     f"Ошибка: время завершения сна не может быть раньше или равно времени начала сна ({start_local}).\n"
                     "Пожалуйста, введите корректное время."
@@ -392,15 +489,18 @@ async def manual_end_time(message: Message, state: FSMContext):
             last_sleep.end_time = custom_utc
             await db_session.commit()
 
-            duration = (last_sleep.end_time -
-                        last_sleep.start_time).total_seconds() // 60
+            duration = (
+                last_sleep.end_time - last_sleep.start_time
+            ).total_seconds() // 60
             await message.answer(f"Сон завершен! Малышка спала {int(duration)} минут.")
             await message.answer("Выберите действие:", reply_markup=main_keyboard)
 
         await state.clear()  # Сброс состояния
 
     except ValueError:
-        await message.answer("Неверный формат времени. Пожалуйста, введите время в формате HH:MM.")
+        await message.answer(
+            "Неверный формат времени. Пожалуйста, введите время в формате HH:MM."
+        )
 
 
 @dp.message(lambda message: message.text == "Завершить сон")
@@ -411,9 +511,7 @@ async def wake_up_button(message: Message):
     now_utc = now_msk.astimezone(pytz.utc)
 
     async for db_session in get_db():
-        result = await db_session.execute(
-            select(User).where(User.chat_id == chat_id)
-        )
+        result = await db_session.execute(select(User).where(User.chat_id == chat_id))
         user = result.scalars().first()
 
         if not user:
@@ -428,14 +526,15 @@ async def wake_up_button(message: Message):
         last_sleep = result.scalars().first()
 
         if not last_sleep:
-            await message.answer("Не найдено активного сна. Используйте кнопку 'Сон' для начала записи.")
+            await message.answer(
+                "Не найдено активного сна. Используйте кнопку 'Сон' для начала записи."
+            )
             return
 
         last_sleep.end_time = now_utc
         await db_session.commit()
 
-        duration = (last_sleep.end_time -
-                    last_sleep.start_time).total_seconds() // 60
+        duration = (last_sleep.end_time - last_sleep.start_time).total_seconds() // 60
         await message.answer(f"Сон завершен! Малыш спал {int(duration)} минут.")
         await message.answer("Выберите действие:", reply_markup=main_keyboard)
 
@@ -444,8 +543,7 @@ async def wake_up_button(message: Message):
 async def ask_feed_amount(message: Message):
     """Запрашивает объем молока, не привязывая к сну, но меняет клавиатуру, если сон активен."""
     await message.answer(
-        "Введите объем выпитого молока в мл.",
-        reply_markup=feed_keyboard
+        "Введите объем выпитого молока в мл.", reply_markup=feed_keyboard
     )
 
 
@@ -457,23 +555,22 @@ async def save_feed_amount(message: Message):
     async for db_session in get_db():
         chat_id = int(CHAT_ID)
         # Записываем питание без проверки сна
-        feed_record = FeedingRecord(
-            chat_id=chat_id, amount=feed_amount)
+        feed_record = FeedingRecord(chat_id=chat_id, amount=feed_amount)
         db_session.add(feed_record)
         await db_session.commit()
 
         # Проверяем, идет ли сейчас сон
         result = await db_session.execute(
-            select(SleepRecord)
-            .where(SleepRecord.chat_id == chat_id, SleepRecord.end_time.is_(None))
+            select(SleepRecord).where(
+                SleepRecord.chat_id == chat_id, SleepRecord.end_time.is_(None)
+            )
         )
         active_sleep = result.scalars().first()
 
     reply_markup = sleep_actions_keyboard if active_sleep else main_keyboard
 
     await message.answer(
-        f"Объем питания: {feed_amount} мл сохранен!",
-        reply_markup=reply_markup
+        f"Объем питания: {feed_amount} мл сохранен!", reply_markup=reply_markup
     )
 
 
@@ -482,7 +579,7 @@ async def cancel_feed(message: Message):
     """Отменяет процесс ввода объема молока и возвращает в главное меню."""
     await message.answer(
         "Ввод отменен. Выберите действие:",
-        reply_markup=main_keyboard  # возвращаемся к стартовой клавиатуре
+        reply_markup=main_keyboard,  # возвращаемся к стартовой клавиатуре
     )
 
 
@@ -490,94 +587,7 @@ async def cancel_feed(message: Message):
 async def send_stats_handler(message: Message):
     """Отправляет пользователю статистику за день, неделю и месяц."""
     chat_id = int(CHAT_ID)
-    today = datetime.now(TZ).date()
-
-    # Границы дней
-    day_start = datetime.combine(today, time(6, 0)).astimezone(TZ)
-    day_end = datetime.combine(today, time(22, 0)).astimezone(TZ)
-
-    # Границы недели и месяца
-    week_start = today - timedelta(days=7)
-    month_start = today - timedelta(days=30)
-
-    async for db_session in get_db():
-        # === ПИТАНИЕ за сегодня ===
-        feeds_today = await db_session.execute(
-            select(FeedingRecord)
-            .where(FeedingRecord.chat_id == chat_id,
-                   func.date(FeedingRecord.timestamp) == today)
-        )
-        feeds = feeds_today.scalars().all()
-        day_feed = sum(f.amount for f in feeds if day_start <=
-                       f.timestamp.astimezone(TZ) <= day_end)
-        night_feed = sum(f.amount for f in feeds if not (
-            day_start <= f.timestamp.astimezone(TZ) <= day_end))
-
-        # === СОН за сегодня ===
-        sleeps_today = await db_session.execute(
-            select(SleepRecord)
-            .where(SleepRecord.chat_id == chat_id,
-                   SleepRecord.end_time.isnot(None),
-                   func.date(SleepRecord.end_time) == today)
-        )
-        sleeps = sleeps_today.scalars().all()
-
-        day_sleep = 0
-        night_sleep = 0
-        for s in sleeps:
-            end_msk = s.end_time.astimezone(TZ)
-            duration = int((s.end_time - s.start_time).total_seconds() // 60)
-            if day_start <= end_msk <= day_end:
-                day_sleep += duration
-            else:
-                night_sleep += duration
-
-        # === Питание за неделю и месяц ===
-        feeds_week = await db_session.execute(
-            select(func.sum(FeedingRecord.amount))
-            .where(FeedingRecord.chat_id == chat_id,
-                   FeedingRecord.timestamp >= week_start)
-        )
-        week_feed = feeds_week.scalar() or 0
-
-        feeds_month = await db_session.execute(
-            select(func.sum(FeedingRecord.amount))
-            .where(FeedingRecord.chat_id == chat_id,
-                   FeedingRecord.timestamp >= month_start)
-        )
-        month_feed = feeds_month.scalar() or 0
-
-        # === Сон за неделю и месяц ===
-        sleeps_week = await db_session.execute(
-            select(SleepRecord)
-            .where(SleepRecord.chat_id == chat_id,
-                   SleepRecord.end_time.isnot(None),
-                   SleepRecord.end_time >= week_start)
-        )
-        week_sleeps = sleeps_week.scalars().all()
-        week_sleep_minutes = sum(
-            int((s.end_time - s.start_time).total_seconds() // 60) for s in week_sleeps)
-
-        sleeps_month = await db_session.execute(
-            select(SleepRecord)
-            .where(SleepRecord.chat_id == chat_id,
-                   SleepRecord.end_time.isnot(None),
-                   SleepRecord.end_time >= month_start)
-        )
-        month_sleeps = sleeps_month.scalars().all()
-        month_sleep_minutes = sum(
-            int((s.end_time - s.start_time).total_seconds() // 60) for s in month_sleeps)
-
-    # Формируем отчет
-    text = (
-        f"📊 <b>Статистика за {today.strftime('%d.%m.%Y')}:</b>\n"
-        f"🥛 Питание: День — {day_feed} мл, Ночь — {night_feed} мл\n"
-        f"😴 Сон: День — {day_sleep} мин, Ночь — {night_sleep} мин\n\n"
-        f"📅 За неделю:\n"
-        f"🥛 Питание: {week_feed} мл | 😴 Сон: {week_sleep_minutes} мин\n"
-        f"📅 За месяц:\n"
-        f"🥛 Питание: {month_feed} мл | 😴 Сон: {month_sleep_minutes} мин"
-    )
+    text = await build_statistics_text(chat_id)
 
     await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard)
 
@@ -592,6 +602,7 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO)  # Настроим логирование
     await on_startup()  # Вызываем стартовые функции перед запуском
     await dp.start_polling(bot)  # Запускаем бота
+
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
