@@ -4,7 +4,7 @@ import aiocron
 import pytz
 from sqlalchemy import func, select
 
-from bot_core.bot import bot
+from bot_core.bot_instance import bot
 from bot_core.utils import format_minutes
 from db.database import get_db
 from db.models import FeedingRecord, SleepRecord, User
