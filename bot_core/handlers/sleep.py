@@ -14,6 +14,7 @@ from bot_core.keyboards import (
     sleep_keyboard,
 )
 from bot_core.states import ManualEndSleepState, ManualSleepStartState
+from bot_core.utils import format_minutes
 from db.database import get_db
 from db.models import SleepRecord, User
 
@@ -156,7 +157,7 @@ async def manual_wake_up_date_choice(message: Message, state: FSMContext):
 
         duration = ((sleep_record.end_time - sleep_record.start_time).seconds) // 60
         await message.answer(
-            f"Сон завершен вручную! Продолжительность: {duration} минут.",
+            f"Сон завершён вручную! Продолжительность: {format_minutes(duration)}",
             reply_markup=main_keyboard,
         )
 
@@ -185,6 +186,6 @@ async def wake_up(message: Message):
 
         minutes = int((sleep.end_time - sleep.start_time).total_seconds() // 60)
         await message.answer(
-            f"Сон завершён! Продолжительность: {minutes} мин.",
+            f"Сон завершён! Продолжительность: {format_minutes(minutes)}",
             reply_markup=main_keyboard,
         )
