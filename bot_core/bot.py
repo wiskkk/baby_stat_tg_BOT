@@ -4,9 +4,10 @@ import os
 
 import pytz
 from aiogram import Dispatcher
-from bot_core.handlers import feeding_router, sleep_router, start_router, stats_router
 
 from bot_core.bot_instance import bot
+from bot_core.handlers import (feeding_router, plots_router, sleep_router,
+                               start_router, stats_router)
 
 dp: Dispatcher = Dispatcher()
 
@@ -17,6 +18,7 @@ dp.include_router(sleep_router)
 dp.include_router(start_router)
 dp.include_router(feeding_router)
 dp.include_router(stats_router)
+dp.include_router(plots_router)
 
 
 async def on_startup() -> None:

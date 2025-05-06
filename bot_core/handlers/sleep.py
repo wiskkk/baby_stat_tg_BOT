@@ -7,12 +7,8 @@ from aiogram.types import Message
 from sqlalchemy.future import select
 
 from bot_core.bot_instance import CHAT_ID
-from bot_core.keyboards import (
-    date_choice_keyboard,
-    main_keyboard,
-    sleep_actions_keyboard,
-    sleep_keyboard,
-)
+from bot_core.keyboards import (date_choice_keyboard, main_keyboard,
+                                sleep_actions_keyboard, sleep_keyboard)
 from bot_core.states import ManualEndSleepState, ManualSleepStartState
 from bot_core.utils import format_minutes
 from db.database import get_db

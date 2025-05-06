@@ -14,98 +14,60 @@ TZ = pytz.timezone("Europe/Moscow")
 
 async def build_statistics_text(chat_id: int) -> str:
     today = datetime.now(TZ).date()
+    days = [today - timedelta(days=i) for i in range(3)]
 
-    day_start = datetime.combine(today, time(6, 0)).astimezone(TZ)
-    day_end = datetime.combine(today, time(22, 0)).astimezone(TZ)
-
-    week_start = today - timedelta(days=7)
-    month_start = today - timedelta(days=30)
+    day_blocks = []
 
     async for db_session in get_db():
-        feeds_today = await db_session.execute(
-            select(FeedingRecord).where(
-                FeedingRecord.chat_id == chat_id,
-                func.date(FeedingRecord.timestamp) == today,
-            )
-        )
-        feeds = feeds_today.scalars().all()
-        day_feed = sum(
-            f.amount
-            for f in feeds
-            if day_start <= f.timestamp.astimezone(TZ) <= day_end
-        )
-        night_feed = sum(
-            f.amount
-            for f in feeds
-            if not (day_start <= f.timestamp.astimezone(TZ) <= day_end)
-        )
+        for day in days:
+            day_start = datetime.combine(day, time(6, 0)).astimezone(TZ)
+            day_end = datetime.combine(day, time(22, 0)).astimezone(TZ)
 
-        sleeps_today = await db_session.execute(
-            select(SleepRecord).where(
-                SleepRecord.chat_id == chat_id,
-                SleepRecord.end_time.isnot(None),
-                func.date(SleepRecord.end_time) == today,
+            # === Питание за день ===
+            feeds_result = await db_session.execute(
+                select(FeedingRecord).where(
+                    FeedingRecord.chat_id == chat_id,
+                    func.date(FeedingRecord.timestamp) == day,
+                )
             )
-        )
-        sleeps = sleeps_today.scalars().all()
-        day_sleep = night_sleep = 0
-        for s in sleeps:
-            end_msk = s.end_time.astimezone(TZ)
-            duration = int((s.end_time - s.start_time).total_seconds() // 60)
-            if day_start <= end_msk <= day_end:
-                day_sleep += duration
-            else:
-                night_sleep += duration
-
-        # Неделя и месяц — питание
-        feeds_week = await db_session.execute(
-            select(func.sum(FeedingRecord.amount)).where(
-                FeedingRecord.chat_id == chat_id, FeedingRecord.timestamp >= week_start
+            feeds = feeds_result.scalars().all()
+            day_feed = sum(
+                f.amount
+                for f in feeds
+                if day_start <= f.timestamp.astimezone(TZ) <= day_end
             )
-        )
-        week_feed = feeds_week.scalar() or 0
-
-        feeds_month = await db_session.execute(
-            select(func.sum(FeedingRecord.amount)).where(
-                FeedingRecord.chat_id == chat_id, FeedingRecord.timestamp >= month_start
+            night_feed = sum(
+                f.amount
+                for f in feeds
+                if not (day_start <= f.timestamp.astimezone(TZ) <= day_end)
             )
-        )
-        month_feed = feeds_month.scalar() or 0
 
-        # Сон неделя и месяц
-        sleeps_week = await db_session.execute(
-            select(SleepRecord).where(
-                SleepRecord.chat_id == chat_id,
-                SleepRecord.end_time.isnot(None),
-                SleepRecord.end_time >= week_start,
+            # === Сон за день ===
+            sleeps_result = await db_session.execute(
+                select(SleepRecord).where(
+                    SleepRecord.chat_id == chat_id,
+                    SleepRecord.end_time.isnot(None),
+                    func.date(SleepRecord.end_time) == day,
+                )
             )
-        )
-        week_sleeps = sleeps_week.scalars().all()
-        week_sleep_minutes = sum(
-            int((s.end_time - s.start_time).total_seconds() // 60) for s in week_sleeps
-        )
+            sleeps = sleeps_result.scalars().all()
+            day_sleep = night_sleep = 0
+            for s in sleeps:
+                end_msk = s.end_time.astimezone(TZ)
+                duration = int((s.end_time - s.start_time).total_seconds() // 60)
+                if day_start <= end_msk <= day_end:
+                    day_sleep += duration
+                else:
+                    night_sleep += duration
 
-        sleeps_month = await db_session.execute(
-            select(SleepRecord).where(
-                SleepRecord.chat_id == chat_id,
-                SleepRecord.end_time.isnot(None),
-                SleepRecord.end_time >= month_start,
+            block = (
+                f"📅 <b>{day.strftime('%d.%m.%Y')}</b>\n"
+                f"🥛 Питание: День — {day_feed} мл, Ночь — {night_feed} мл\n"
+                f"😴 Сон: День — {format_minutes(day_sleep)}, Ночь — {format_minutes(night_sleep)}\n"
             )
-        )
-        month_sleeps = sleeps_month.scalars().all()
-        month_sleep_minutes = sum(
-            int((s.end_time - s.start_time).total_seconds() // 60) for s in month_sleeps
-        )
+            day_blocks.append(block)
 
-    return (
-        f"📊 <b>Статистика за {today.strftime('%d.%m.%Y')}:</b>\n"
-        f"🥛 Питание: День — {day_feed} мл, Ночь — {night_feed} мл\n"
-        f"😴 Сон: День — {format_minutes(day_sleep)} мин, Ночь — {format_minutes(night_sleep)} мин\n\n"
-        f"📅 За неделю:\n"
-        f"🥛 Питание: {week_feed} мл | 😴 Сон: {format_minutes(week_sleep_minutes)} мин\n"
-        f"📅 За месяц:\n"
-        f"🥛 Питание: {month_feed} мл | 😴 Сон: {format_minutes(month_sleep_minutes)} мин"
-    )
+    return "📊 <b>Статистика за последние 3 дня:</b>\n\n" + "\n".join(day_blocks)
 
 
 async def send_daily_statistics(chat_id: int):

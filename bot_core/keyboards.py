@@ -12,7 +12,7 @@ date_choice_keyboard = ReplyKeyboardMarkup(
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Сон"), KeyboardButton(text="Питание")],
-        [KeyboardButton(text="Статистика")],
+        [KeyboardButton(text="Статистика"), KeyboardButton(text="Диаграммы")]
     ],
     resize_keyboard=True,
 )
