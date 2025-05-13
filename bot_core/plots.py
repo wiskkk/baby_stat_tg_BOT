@@ -102,13 +102,13 @@ async def generate_sleep_plot(chat_id: int, period: str = "7d") -> io.BytesIO:
             sleep_data[date] += duration
 
     dates = list(sleep_data.keys())
-    values = list(sleep_data.values())
+    values = [round(v / 60, 2) for v in sleep_data.values()]
 
     fig_width = min(20, max(6, days_count / 6))
     fig, ax = plt.subplots(figsize=(fig_width, 4))
     ax.bar(dates, values, color="#8ab6d6")
     ax.set_title(f"Сон за {days_count} дней")
-    ax.set_ylabel("Минуты сна")
+    ax.set_ylabel("Часы сна")
     ax.set_xlabel("Дата")
     ax.grid(True, axis="y")
 
