@@ -54,6 +54,13 @@ async def generate_feeding_plot(chat_id: int, period: str = "7d") -> io.BytesIO:
     ax.set_ylabel("мл")
     ax.grid(True)
 
+    # Добавляем среднюю линию
+    non_zero_values = [a for a in amounts if a > 0]
+    if non_zero_values:
+        avg = sum(non_zero_values) / len(non_zero_values)
+        ax.axhline(y=avg, color="red", linestyle="--", label=f"Среднее: {avg:.1f} мл")
+        ax.legend()
+
     step = max(1, days_count // 10)
     ax.set_xticks(dates[::step])
     ax.set_xticklabels([d.strftime("%d.%m") for d in dates[::step]], rotation=45)
