@@ -24,7 +24,7 @@ async def generate_feeding_plot(chat_id: int, period: str = "7d") -> io.BytesIO:
     else:
         raise ValueError("Неподдерживаемый период")
 
-    end_date = now.date()
+    end_date = now.date() - timedelta(days=1)
     days_count = (end_date - start_date).days + 1
 
     dates = [start_date + timedelta(days=i) for i in range(days_count)]
@@ -86,7 +86,7 @@ async def generate_sleep_plot(chat_id: int, period: str = "7d") -> io.BytesIO:
     else:
         raise ValueError("Неподдерживаемый период")
 
-    end_date = now.date()
+    end_date = now.date() - timedelta(days=1)
     days_count = (end_date - start_date).days + 1
 
     sleep_data = {start_date + timedelta(days=i): 0 for i in range(days_count)}
@@ -118,6 +118,12 @@ async def generate_sleep_plot(chat_id: int, period: str = "7d") -> io.BytesIO:
     ax.set_ylabel("Часы сна")
     ax.set_xlabel("Дата")
     ax.grid(True, axis="y")
+
+    non_zero_values = [v for v in values if v > 0]
+    if non_zero_values:
+        avg = sum(non_zero_values) / len(non_zero_values)
+        ax.axhline(y=avg, color="red", linestyle="--", label=f"Среднее: {avg:.1f} ч")
+        ax.legend()
 
     step = max(1, days_count // 10)
     ax.set_xticks(dates[::step])
