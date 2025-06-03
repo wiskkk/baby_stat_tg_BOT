@@ -51,6 +51,24 @@ async def build_statistics_text(chat_id: int) -> str:
                 )
             )
             sleeps = sleeps_result.scalars().all()
+            wake_blocks = []
+            # Сортируем сны по времени
+            sleeps_sorted = sorted(sleeps, key=lambda s: s.end_time)
+
+            # Находим промежутки бодрствования
+            for i in range(1, len(sleeps_sorted)):
+                prev_sleep = sleeps_sorted[i - 1]
+                curr_sleep = sleeps_sorted[i]
+
+                wake_start = prev_sleep.end_time
+                wake_end = curr_sleep.start_time
+
+                if wake_end > wake_start:  # Проверим ва
+                    duration_min = int((wake_end - wake_start).total_seconds() // 60)
+                    wake_blocks.append(
+                        f"🕓 {wake_start.astimezone(TZ).strftime('%H:%M')} — {wake_end.astimezone(TZ).strftime('%H:%M')} ({format_minutes(duration_min)})"
+                    )
+
             day_sleep = night_sleep = 0
             for s in sleeps:
                 end_msk = s.end_time.astimezone(TZ)
@@ -64,6 +82,7 @@ async def build_statistics_text(chat_id: int) -> str:
                 f"📅 <b>{day.strftime('%d.%m.%Y')}</b>\n"
                 f"🥛 Питание: День — {day_feed} мл, Ночь — {night_feed} мл\n"
                 f"😴 Сон: День — {format_minutes(day_sleep)}, Ночь — {format_minutes(night_sleep)}\n"
+                + (f"⏰ Бодрствование:\n" + "\n".join(wake_blocks) + "\n" if wake_blocks else "")
             )
             day_blocks.append(block)
 
